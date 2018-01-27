@@ -25,24 +25,35 @@ GSMClient client;
 GPRS gprs;
 GSM gsmAccess;
 
-char server[] = "<some ip>";
 char path[] = "/pod";
 int port = 8080; // port 80 is the default for HTTP
 
-String sensorstring = "";
-boolean sensor_string_complete = false;
-String DO_String = "";
+RTC_DS3231 rtc;
+
+String sensorstring = "11.11";
+boolean sensor_string_complete = true;
+/*
+ * 
+ String DO_String = "";
 String T_String = "";
 String Tur_String = "";
 String tempDO = "";
+*/
 //boolean DODO = true;
 
 // SYSTEEM
 void setup() {
-  
+
   //setup connection to console
   Serial.begin(9600);
   Serial.println("Start connectie met console");
+
+  rtc.begin();
+  rtc.adjust(1388534400);
+  Serial.println("Setting the RTC to Jan 1, 2014 00:00:00");
+
+  Serial.println ( nowAsString() );
+
   //setup connection to do sensor
   Serial3.begin(9600);
   Serial.println("Start connectie met DO sensor");
@@ -76,7 +87,7 @@ void setup() {
 void setupGPRS() {
   Serial.println("Opstarten van internet verbinding");
   // connection state
-  boolean notConnected = true;
+  boolean notConnected = false;
 
   // After starting the modem with GSM.begin()
   // attach the shield to the GPRS network with the APN, login and password
@@ -116,32 +127,21 @@ void loop() {
   }
 
   if ( sensor_string_complete == true) {
-    sendSMS ( sensorstring, getTur(), getT(0) );
+    sendMessage ( sensorstring, getTur(), getT(0) );
     sensor_string_complete = false;
     requestReadingFromDO();
   }
 
-
-/*
-  DO_String = "DO: " + getRealDO()+ " ";
-  Tur_String = "Tur: " + getTur()+" ";
-  T_String = "T: " + getT(0);
-  sensorString = DO_String + Tur_String + T_String;
-
-  //sms
-  char txtMsg[200];
-  sensorString.toCharArray(txtMsg, 200);
-  sms.beginSMS(remoteNumber);
-  sms.print(txtMsg);
-  sms.endSMS();
-*/
 }
 
-void sendSMS ( String doreading, String turbiditeit, String temperatuur ) {
+void sendMessage ( String doreading, String turbiditeit, String temperatuur ) {
   char txtMsg[200];
-  String message = "{ \"disolvedOxygen\": " + doreading + ", \"turbidity\": " + turbiditeit + ", \"temperature\": " + temperatuur + "}";
+  String message = "{ \"timestamp\": \"" + nowAsString() + "\", \"data\": [ " +  
+    "{ \"disolvedOxygen\": " + doreading + ", \"turbidity\": " + turbiditeit + ", \"temperature\": " + temperatuur + ", \"samplingTimestamp\": \""+nowAsString()+"\"}"
+    + " ] }"
+    ;
   Serial.println ( message );
-  sendMessageOverGPRS ( message );
+//  sendMessageOverGPRS ( message );
   /*
   message.toCharArray(txtMsg, 200);
   sms.beginSMS(remoteNumber);
@@ -150,8 +150,7 @@ void sendSMS ( String doreading, String turbiditeit, String temperatuur ) {
   */
 }
 
-String getDO() {
-}
+
 
 
 /*
@@ -184,18 +183,15 @@ String getT(int index){
   tSensor.requestTemperatures();
   float currentTemp = tSensor.getTempCByIndex(index);
   char buffer[10];
-  String temp = dtostrf(currentTemp, 5, 2, buffer);
-  return temp;
+  return dtostrf(currentTemp, 5, 2, buffer);
 }
 
 String getTur(){
   int sensorValue = analogRead(A0);
   float voltage = sensorValue * (5.0 / 1024.0); 
   char buffer[7];
-  String tur = dtostrf(voltage, 5, 2, buffer);
-  return tur;
+  return dtostrf(voltage, 5, 2, buffer);
 }
-
 
 boolean isValidNumber(String str){
    for(byte i=0;i<str.length();i++) {
@@ -235,6 +231,12 @@ void sendMessageOverGPRS ( String message ) {
   }
 }
 
+String nowAsString() {
+  DateTime now = rtc.now();
+  char buffer[20]; 
+  sprintf(buffer, "%04d-%02d-%02dT%02d:%02d:%02d", now.year(), now.month(), now.day(), now.hour(), now.minute(), now.second());
+  return String(buffer);
+}
 
 
 
