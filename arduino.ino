@@ -7,12 +7,16 @@
 #include <EEPROM.h>
 #include <ctype.h>
 #include <Wire.h>
+#include <avr/sleep.h>
 
-#define PINNUMBER ""
+#define PINNUMBER "6029"
 
 #define GPRS_APN       "internet.proximus.be" // replace your GPRS APN
 #define GPRS_LOGIN     ""    // replace with your GPRS login
 #define GPRS_PASSWORD  "" // replace with your GPRS password
+
+#define wakePin 2
+#define ledPin 13
 
 OneWire oneWire(4);
 DallasTemperature tSensor(&oneWire);
@@ -28,11 +32,11 @@ GSMClient client;
 GPRS gprs;
 GSM gsmAccess;
 
-char server[] = "94.226.162.216";
+char server[] = "172.104.242.113";
 char path[] = "/api/v1/reading";
-int port = 8080; // port 80 is the default for HTTP
+int port = 80; // port 80 is the default for HTTP
 
-RTC_DS3231 rtc;
+RTC_DS3231 RTC;
 
 /*
   float doReading = "";
@@ -52,10 +56,51 @@ void setup() {
   Serial.begin(9600);
   Serial.println("Start connectie met console");
 
-  rtc.begin();
-  rtc.adjust(1388534400);
+  pinMode(wakePin, INPUT);
+  pinMode(ledPin, OUTPUT);
+  digitalWrite(ledPin, HIGH);
+  delay(1000);
+  Serial.println("Start het sleep mechanisme");
+
+  RTC.begin();
+  RTC.adjust(1388534400);
   Serial.println("Setting the RTC to Jan 1, 2014 00:00:00");
 
+  RTC.armAlarm(1, false);
+  RTC.clearAlarm(1);
+  RTC.alarmInterrupt(1, false);
+  RTC.armAlarm(2, false);
+  RTC.clearAlarm(2);
+  RTC.alarmInterrupt(2, false);
+  RTC.writeSqwPinMode(DS3231_OFF);
+
+  setAlarm();
+
+}
+
+void loop() {
+
+  if ( do_reading_complete == true) {
+    int number = getNumberOfStoredReadings();
+    saveReadings ( number, RTC.now().unixtime(), doReading, getTurbidity(), getTemperature() );
+    if ( number >= NUMBER_OF_READINGS_TO_SAVE_BEFORE_SENDING ) {
+      sendSaveReadings();
+    }
+    //    do_reading_complete = false;
+
+    sleepNow();
+    setupOnAwakening();
+    requestReadingFromDO();
+
+  }
+
+}
+
+// ----- beware of the methods below ;-)
+
+void setupOnAwakening() {
+
+  Serial.println ("Configuring sensors");
   //setup connection to do sensor
   Serial3.begin(9600);
   Serial.println("Start connectie met DO sensor");
@@ -64,14 +109,17 @@ void setup() {
   Serial.println("Start connectie met temperatuur sensor");
   tSensor.begin();
 
-  //  setupSMS();
-  setupGPRS();
-
   //tell DO sensor to take a reading
   requestReadingFromDO();
 }
 
+boolean SMS_INITED = false;
 void setupSMS() {
+
+  if ( SMS_INITED == false ) {
+    setupSMS();
+  }
+
   Serial.println("Start verbinding met GSM module");
   boolean notConnected = true;
   while (notConnected) {
@@ -120,21 +168,6 @@ void serialEvent3() {                                 //if the hardware serial p
   }
 
   do_reading_complete = true;                      //set the flag used to tell if we have received a completed string from the PC
-}
-
-void loop() {
-
-  if ( do_reading_complete == true) {
-    int number = getNumberOfStoredReadings();
-    saveReadings ( number, rtc.now().unixtime(), doReading, getTurbidity(), getTemperature() );
-    if ( number >= NUMBER_OF_READINGS_TO_SAVE_BEFORE_SENDING ) {
-      sendSaveReadings();
-    }
-    //    sendMessage ( doReading, getTurbidity(), getTemperature() );
-    //    do_reading_complete = false;
-    requestReadingFromDO();
-  }
-
 }
 
 int getNumberOfStoredReadings() {
@@ -197,7 +230,7 @@ String calculateMessageToSend() {
             + ", \"samplingTimestamp\": " +  timestamp + "}";
   }
 
-  String timestamp = dtostrf(rtc.now().unixtime(), 10, 0, buffer);
+  String timestamp = dtostrf(RTC.now().unixtime(), 10, 0, buffer);
 
   return
     "{ \"timestamp\": " + timestamp + ", "
@@ -228,14 +261,21 @@ boolean isValidNumber(String str) {
 }
 
 /*
-void sendSMS ( String message )  {
+  void sendSMS ( String message )  {
     message.toCharArray(txtMsg, 200);
     sms.beginSMS(remoteNumber);
     sms.print(txtMsg);
     sms.endSMS();
-}*/
+  }*/
+
+boolean GRPS_INITED = false;
 
 void sendMessageOverGPRS ( String message ) {
+
+  if ( GRPS_INITED == false ) {
+    setupGPRS();
+  }
+
   if (client.connect(server, port)) {
     Serial.println("connected");
 
@@ -262,6 +302,43 @@ void sendMessageOverGPRS ( String message ) {
     // if you didn't get a connection to the server:
     Serial.println("connection failed");
   }
+}
+
+void sleepNow() {
+  Serial.println ( "We gaan slapen");
+  delay(1000);
+  attachInterrupt(0, wakeUp, LOW);
+  digitalWrite(ledPin, LOW);
+  Serial.println("sleepnow");
+  set_sleep_mode(SLEEP_MODE_PWR_DOWN);
+  sleep_enable();
+  attachInterrupt(0, wakeUpNow, LOW);
+  sleep_mode();
+  sleep_disable();
+  detachInterrupt(0);
+  RTC.armAlarm(1, false);
+  RTC.clearAlarm(1);
+  RTC.alarmInterrupt(1, false);
+  digitalWrite(ledPin, HIGH);
+  setAlarm();
+  Serial.println ( "We zijn terug wakker");
+}
+
+void wakeUp() {}
+void wakeUpNow() {}
+
+void setAlarm() {
+  DateTime now = RTC.now();
+  DateTime future (now + TimeSpan(0, 0, 2, 0)); //dagen uren minuten seconden
+  RTC.setAlarm(ALM1_MATCH_HOURS, future.minute(), future.hour(), future.second());
+  RTC.alarmInterrupt(1, true);
+  Serial.print("Next alarm on ");
+  Serial.print(future.hour());
+  Serial.print(":");
+  Serial.print(future.minute());
+  Serial.print(":");
+  Serial.println(future.second());
+  delay(1000);
 }
 
 /*
