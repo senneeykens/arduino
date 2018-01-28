@@ -9,7 +9,7 @@
 #include <Wire.h>
 #include <avr/sleep.h>
 
-#define PINNUMBER "6029"
+#define PINNUMBER ""
 
 #define GPRS_APN       "internet.proximus.be" // replace your GPRS APN
 #define GPRS_LOGIN     ""    // replace with your GPRS login
@@ -17,6 +17,11 @@
 
 #define wakePin 2
 #define ledPin 13
+
+boolean MODE_FIXED = true;
+const int NUMBER_OF_READINGS_TO_SAVE_BEFORE_SENDING = 2;
+const int SLEEP_FOR_MINUTES = 2;
+const String RUN_NAME = "ArduinoX";
 
 OneWire oneWire(4);
 DallasTemperature tSensor(&oneWire);
@@ -46,8 +51,7 @@ RTC_DS3231 RTC;
 // FAKE a DO reading as the DO sensor is no longer connected to the arduino platform
 float doReading = 11.11;
 boolean do_reading_complete = true;
-
-int NUMBER_OF_READINGS_TO_SAVE_BEFORE_SENDING = 5;
+boolean connected_to_server = false;
 
 // SYSTEEM
 void setup() {
@@ -56,16 +60,19 @@ void setup() {
   Serial.begin(9600);
   Serial.println("Start connectie met console");
 
-  pinMode(wakePin, INPUT);
-  pinMode(ledPin, OUTPUT);
-  digitalWrite(ledPin, HIGH);
-  delay(1000);
-  Serial.println("Start het sleep mechanisme");
+  if ( MODE_FIXED ) {
+    pinMode(wakePin, INPUT);
+    pinMode(ledPin, OUTPUT);
+    digitalWrite(ledPin, HIGH);
+    delay(1000);
+    Serial.println("Start het sleep mechanisme");
+  }
 
   RTC.begin();
   RTC.adjust(1388534400);
   Serial.println("Setting the RTC to Jan 1, 2014 00:00:00");
 
+  // we'll reset the alarms in both MODE's as you never know what the previous mode was
   RTC.armAlarm(1, false);
   RTC.clearAlarm(1);
   RTC.alarmInterrupt(1, false);
@@ -74,7 +81,12 @@ void setup() {
   RTC.alarmInterrupt(2, false);
   RTC.writeSqwPinMode(DS3231_OFF);
 
-  setAlarm();
+  if ( MODE_FIXED ) {
+    setAlarm();
+  } else {
+    setupGPRS();
+    setupOnAwakening();
+  }
 
 }
 
@@ -83,13 +95,17 @@ void loop() {
   if ( do_reading_complete == true) {
     int number = getNumberOfStoredReadings();
     saveReadings ( number, RTC.now().unixtime(), doReading, getTurbidity(), getTemperature() );
-    if ( number >= NUMBER_OF_READINGS_TO_SAVE_BEFORE_SENDING ) {
+    if ( number >= NUMBER_OF_READINGS_TO_SAVE_BEFORE_SENDING - 1 ) {
       sendSaveReadings();
     }
-    //    do_reading_complete = false;
+    //do_reading_complete = false;
 
-    sleepNow();
-    setupOnAwakening();
+    if ( MODE_FIXED ) {
+      sleepNow();
+      setupOnAwakening();
+    } else {
+      delay(1000);
+    }
     requestReadingFromDO();
 
   }
@@ -114,6 +130,7 @@ void setupOnAwakening() {
 }
 
 boolean SMS_INITED = false;
+
 void setupSMS() {
 
   if ( SMS_INITED == false ) {
@@ -151,6 +168,14 @@ void setupGPRS() {
     }
   }
   Serial.println("Verbinding met het internet gemaakt");
+  if (client.connect(server, port)) {
+    Serial.println("Verbonden met de server");
+    connected_to_server = true;
+  } else {
+    Serial.println("Verbinding met de server mislukt");
+    connected_to_server = false;
+  }
+
 }
 
 void requestReadingFromDO() {
@@ -170,13 +195,22 @@ void serialEvent3() {                                 //if the hardware serial p
   do_reading_complete = true;                      //set the flag used to tell if we have received a completed string from the PC
 }
 
+int NUMBER_OF_STORED_READINGS = 0;
+
 int getNumberOfStoredReadings() {
-  return EEPROM.read(0);
+  if ( MODE_FIXED ) {
+    return EEPROM.read(0);
+  } else {
+    return NUMBER_OF_STORED_READINGS;
+  }
 }
 
-void saveReadings ( int numberOfStoredReadings, long samplingTimestamp, float doreadingAsFloat, float turbidityAsFloat, float temperatureAsFloat ) {
+long SAMPLING_TIMESTAMP[NUMBER_OF_READINGS_TO_SAVE_BEFORE_SENDING];
+float DO_READING[NUMBER_OF_READINGS_TO_SAVE_BEFORE_SENDING];
+float TURBIDITY[NUMBER_OF_READINGS_TO_SAVE_BEFORE_SENDING];
+float TEMPERATURE[NUMBER_OF_READINGS_TO_SAVE_BEFORE_SENDING];
 
-  EEPROM.write ( 0, numberOfStoredReadings + 1 );
+void saveReadings ( int numberOfStoredReadings, long samplingTimestamp, float doreadingAsFloat, float turbidityAsFloat, float temperatureAsFloat ) {
 
   Serial.print ( "Wegschrijven van " );
   Serial.print ( numberOfStoredReadings + 1 );
@@ -187,12 +221,24 @@ void saveReadings ( int numberOfStoredReadings, long samplingTimestamp, float do
   Serial.print ( ", turbidityAsFloat ");
   Serial.print (turbidityAsFloat);
   Serial.print ( ", temperatureAsFloat ");
-  Serial.println (temperatureAsFloat);
+  Serial.print (temperatureAsFloat);
 
-  EEPROM_writeLong ( 1 + ( 4 * 5 * numberOfStoredReadings ), samplingTimestamp );
-  EEPROM_writeDouble ( 5 + ( 4 * 5 * numberOfStoredReadings ), doreadingAsFloat );
-  EEPROM_writeDouble ( 9 + ( 4 * 5 * numberOfStoredReadings ), turbidityAsFloat );
-  EEPROM_writeDouble ( 13 + ( 4 * 5 * numberOfStoredReadings ), temperatureAsFloat );
+  if ( MODE_FIXED ) {
+    Serial.println ( "naar EEPROM");
+    EEPROM.write ( 0, numberOfStoredReadings + 1 );
+
+    EEPROM_writeLong ( 1 + ( 4 * 5 * numberOfStoredReadings ), samplingTimestamp );
+    EEPROM_writeDouble ( 5 + ( 4 * 5 * numberOfStoredReadings ), doreadingAsFloat );
+    EEPROM_writeDouble ( 9 + ( 4 * 5 * numberOfStoredReadings ), turbidityAsFloat );
+    EEPROM_writeDouble ( 13 + ( 4 * 5 * numberOfStoredReadings ), temperatureAsFloat );
+  } else {
+    Serial.println ( "naar MEMORY");
+    SAMPLING_TIMESTAMP[numberOfStoredReadings] = samplingTimestamp;
+    DO_READING[numberOfStoredReadings] = doreadingAsFloat;
+    TURBIDITY[numberOfStoredReadings] = turbidityAsFloat;
+    TEMPERATURE[numberOfStoredReadings] = temperatureAsFloat;
+    NUMBER_OF_STORED_READINGS++;
+  }
 
 }
 
@@ -200,25 +246,40 @@ void sendSaveReadings() {
   String message = calculateMessageToSend();
   Serial.println ( message );
   sendMessageOverGPRS ( message );
-  EEPROM.write ( 0, 0 );
+  if ( MODE_FIXED )  {
+    EEPROM.write ( 0, 0 );
+  } else {
+    NUMBER_OF_STORED_READINGS = 0;
+  }
 }
 
 String calculateMessageToSend() {
 
   int number = getNumberOfStoredReadings();
   String data = "";
-  char buffer[10];
+  char buffer[15];
   for ( int i = 0; i < number; i ++ ) {
 
-    long samplingTimestamp = EEPROM_readLong ( 1 + ( 4 * 5 * i ) );
-    float doreadingAsFloat = EEPROM_readDouble ( 5 + ( 4 * 5 * i ) );
-    float turbidityAsFloat = EEPROM_readDouble ( 9 + ( 4 * 5 * i ) );
-    float temperatureAsFloat = EEPROM_readDouble ( 13 + ( 4 * 5 * i ) );
+    long samplingTimestamp;
+    float doreadingAsFloat;
+    float turbidityAsFloat;
+    float temperatureAsFloat;
+    if ( MODE_FIXED ) {
+      samplingTimestamp = EEPROM_readLong ( 1 + ( 4 * 5 * i ) );
+      doreadingAsFloat = EEPROM_readDouble ( 5 + ( 4 * 5 * i ) );
+      turbidityAsFloat = EEPROM_readDouble ( 9 + ( 4 * 5 * i ) );
+      temperatureAsFloat = EEPROM_readDouble ( 13 + ( 4 * 5 * i ) );
+    } else {
+      samplingTimestamp = SAMPLING_TIMESTAMP[i];
+      doreadingAsFloat = DO_READING[i];
+      turbidityAsFloat = TURBIDITY[i];
+      temperatureAsFloat = TEMPERATURE[i];
+    }
 
     String doreading = dtostrf(doreadingAsFloat, 5, 2, buffer);
     String turbidity = dtostrf(turbidityAsFloat, 5, 2, buffer);
     String temperatuur = dtostrf(temperatureAsFloat, 5, 2, buffer);
-    String timestamp = dtostrf(samplingTimestamp, 10, 0, buffer);
+    String samplingTs = ltoa(samplingTimestamp, buffer, 10);
 
     if ( data.length() > 0 ) {
       data += ",";
@@ -227,15 +288,15 @@ String calculateMessageToSend() {
     data += "{ \"disolvedOxygen\": " + doreading
             + ", \"turbidity\": " + turbidity
             + ", \"temperature\": " + temperatuur
-            + ", \"samplingTimestamp\": " +  timestamp + "}";
+            + ", \"samplingTimestamp\": " + samplingTs + "}";
   }
 
-  String timestamp = dtostrf(RTC.now().unixtime(), 10, 0, buffer);
+  String timestamp = ltoa(RTC.now().unixtime(), buffer, 10);
 
   return
     "{ \"timestamp\": " + timestamp + ", "
-    + "\"name\": \"Arduino1\", "
-    + "\"type\": \"FIXED\", "
+    + "\"name\": \""+RUN_NAME+"\", "
+    + "\"type\": \"" + ( MODE_FIXED ? "FIXED" : "MOVING" ) + "\", "
     + "\"data\": [ "
     + data
     + " ] }"
@@ -268,15 +329,13 @@ boolean isValidNumber(String str) {
     sms.endSMS();
   }*/
 
-boolean GRPS_INITED = false;
-
 void sendMessageOverGPRS ( String message ) {
 
-  if ( GRPS_INITED == false ) {
+  if ( MODE_FIXED ) {
     setupGPRS();
   }
 
-  if (client.connect(server, port)) {
+  if (connected_to_server) {
     Serial.println("connected");
 
     client.print("POST ");
@@ -294,7 +353,9 @@ void sendMessageOverGPRS ( String message ) {
     client.println("");
     client.println(message);
 
-    client.stop();
+    if ( MODE_FIXED ) {
+      client.stop();
+    }
 
     Serial.println("message send");
 
@@ -329,7 +390,7 @@ void wakeUpNow() {}
 
 void setAlarm() {
   DateTime now = RTC.now();
-  DateTime future (now + TimeSpan(0, 0, 2, 0)); //dagen uren minuten seconden
+  DateTime future (now + TimeSpan(0, 0, SLEEP_FOR_MINUTES, 0)); //dagen uren minuten seconden
   RTC.setAlarm(ALM1_MATCH_HOURS, future.minute(), future.hour(), future.second());
   RTC.alarmInterrupt(1, true);
   Serial.print("Next alarm on ");
