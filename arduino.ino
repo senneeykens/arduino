@@ -2,10 +2,12 @@
 #include <SoftwareSerial.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
+#include <RTClibExtended.h>
 #include <GSM.h>
 #include <ctype.h>
+#include <Wire.h>
 
-#define PINNUMBER "****"
+#define PINNUMBER "***"
 
 #define GPRS_APN       "internet.proximus.be" // replace your GPRS APN
 #define GPRS_LOGIN     ""    // replace with your GPRS login
@@ -25,13 +27,14 @@ GSMClient client;
 GPRS gprs;
 GSM gsmAccess;
 
+char server[] = "94.226.162.216";
 char path[] = "/pod";
 int port = 8080; // port 80 is the default for HTTP
 
 RTC_DS3231 rtc;
 
-String sensorstring = "11.11";
-boolean sensor_string_complete = true;
+String sensorstring = "";
+boolean sensor_string_complete = false;
 /*
  * 
  String DO_String = "";
@@ -51,8 +54,6 @@ void setup() {
   rtc.begin();
   rtc.adjust(1388534400);
   Serial.println("Setting the RTC to Jan 1, 2014 00:00:00");
-
-  Serial.println ( nowAsString() );
 
   //setup connection to do sensor
   Serial3.begin(9600);
@@ -136,8 +137,12 @@ void loop() {
 
 void sendMessage ( String doreading, String turbiditeit, String temperatuur ) {
   char txtMsg[200];
-  String message = "{ \"timestamp\": \"" + nowAsString() + "\", \"data\": [ " +  
-    "{ \"disolvedOxygen\": " + doreading + ", \"turbidity\": " + turbiditeit + ", \"temperature\": " + temperatuur + ", \"samplingTimestamp\": \""+nowAsString()+"\"}"
+  String message = 
+    "{ \"timestamp\": \"" + nowAsString() 
+    + "\", \"name\": \"A1\", " +  
+    + "\", \"type\": \"FIXED\", " +      
+    + "\", \"data\": [ " +  
+    "{ \"disolvedOxygen\": " + doreading + ", \"turbidity\": " + turbidity + ", \"temperature\": " + temperatuur + ", \"samplingTimestamp\": \""+nowAsString()+"\"}"
     + " ] }"
     ;
   Serial.println ( message );
