@@ -7,7 +7,7 @@
 #include <ctype.h>
 #include <Wire.h>
 
-#define PINNUMBER "***"
+#define PINNUMBER ""
 
 #define GPRS_APN       "internet.proximus.be" // replace your GPRS APN
 #define GPRS_LOGIN     ""    // replace with your GPRS login
@@ -28,13 +28,20 @@ GPRS gprs;
 GSM gsmAccess;
 
 char server[] = "94.226.162.216";
-char path[] = "/pod";
+char path[] = "/api/v1/reading";
 int port = 8080; // port 80 is the default for HTTP
 
 RTC_DS3231 rtc;
 
+/*
 String sensorstring = "";
 boolean sensor_string_complete = false;
+*/
+
+// FAKE a DO reading as the DO sensor is no longer connected to the arduino platform
+String sensorstring = "11.11";
+boolean sensor_string_complete = true;
+
 /*
  * 
  String DO_String = "";
@@ -79,7 +86,7 @@ void setup() {
   Serial.println("Verbinding met GSM module klaar");
 */
 
-  setupGPRS();
+//  setupGPRS();
 
   //tell DO sensor to take a reading
   requestReadingFromDO();
@@ -88,7 +95,7 @@ void setup() {
 void setupGPRS() {
   Serial.println("Opstarten van internet verbinding");
   // connection state
-  boolean notConnected = false;
+  boolean notConnected = true;
 
   // After starting the modem with GSM.begin()
   // attach the shield to the GPRS network with the APN, login and password
@@ -135,13 +142,13 @@ void loop() {
 
 }
 
-void sendMessage ( String doreading, String turbiditeit, String temperatuur ) {
+void sendMessage ( String doreading, String turbidity, String temperatuur ) {
   char txtMsg[200];
   String message = 
-    "{ \"timestamp\": \"" + nowAsString() 
-    + "\", \"name\": \"A1\", " +  
-    + "\", \"type\": \"FIXED\", " +      
-    + "\", \"data\": [ " +  
+    "{ \"timestamp\": \"" + nowAsString() + "\", "
+    + "\"name\": \"Arduino1\", " +  
+    + "\"type\": \"FIXED\", " +      
+    + "\"data\": [ " +  
     "{ \"disolvedOxygen\": " + doreading + ", \"turbidity\": " + turbidity + ", \"temperature\": " + temperatuur + ", \"samplingTimestamp\": \""+nowAsString()+"\"}"
     + " ] }"
     ;
@@ -208,7 +215,7 @@ boolean isValidNumber(String str){
 } 
 
 void sendMessageOverGPRS ( String message ) {
-   if (client.connect(server, port)) {
+  if (client.connect(server, port)) {
     Serial.println("connected");
 
     client.print("POST ");
