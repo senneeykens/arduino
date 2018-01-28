@@ -4,6 +4,7 @@
 #include <DallasTemperature.h>
 #include <RTClibExtended.h>
 #include <GSM.h>
+#include <EEPROM.h>
 #include <ctype.h>
 #include <Wire.h>
 
@@ -16,11 +17,11 @@
 OneWire oneWire(4);
 DallasTemperature tSensor(&oneWire);
 /*
-// this code is for sending sms
-GSM gsmAccess; 
-GSM_SMS sms;
+  // this code is for sending sms
+  GSM gsmAccess;
+  GSM_SMS sms;
 
-char remoteNumber[14]= "01234567890";  // sms enabled telephone number
+  char remoteNumber[14]= "01234567890";  // sms enabled telephone number
 */
 
 GSMClient client;
@@ -34,22 +35,15 @@ int port = 8080; // port 80 is the default for HTTP
 RTC_DS3231 rtc;
 
 /*
-String sensorstring = "";
-boolean sensor_string_complete = false;
+  float doReading = "";
+  boolean do_reading_complete = false;
 */
 
 // FAKE a DO reading as the DO sensor is no longer connected to the arduino platform
-String sensorstring = "11.11";
-boolean sensor_string_complete = true;
+float doReading = 11.11;
+boolean do_reading_complete = true;
 
-/*
- * 
- String DO_String = "";
-String T_String = "";
-String Tur_String = "";
-String tempDO = "";
-*/
-//boolean DODO = true;
+int NUMBER_OF_READINGS_TO_SAVE_BEFORE_SENDING = 5;
 
 // SYSTEEM
 void setup() {
@@ -70,13 +64,19 @@ void setup() {
   Serial.println("Start connectie met temperatuur sensor");
   tSensor.begin();
 
-  /*
-// this code is for sending sms
+  //  setupSMS();
+  setupGPRS();
+
+  //tell DO sensor to take a reading
+  requestReadingFromDO();
+}
+
+void setupSMS() {
   Serial.println("Start verbinding met GSM module");
   boolean notConnected = true;
-  while(notConnected) {
+  while (notConnected) {
     Serial.print (".");
-    if(gsmAccess.begin(PINNUMBER)==GSM_READY){
+    if (gsmAccess.begin(PINNUMBER) == GSM_READY) {
       notConnected = false;
     } else {
       delay(1000);
@@ -84,12 +84,6 @@ void setup() {
   }
   Serial.println ("!");
   Serial.println("Verbinding met GSM module klaar");
-*/
-
-//  setupGPRS();
-
-  //tell DO sensor to take a reading
-  requestReadingFromDO();
 }
 
 void setupGPRS() {
@@ -118,101 +112,128 @@ void requestReadingFromDO() {
 }
 
 void serialEvent3() {                                 //if the hardware serial port_3 receives a char
-  sensorstring = Serial3.readStringUntil(13);         //read the string until we see a <CR>
-  sensor_string_complete = true;                      //set the flag used to tell if we have received a completed string from the PC
+  String sensorstring = Serial3.readStringUntil(13);         //read the string until we see a <CR>
+  if ( isValidNumber ( sensorstring ) ) {
+    doReading = sensorstring.toFloat();
+  } else {
+    requestReadingFromDO();
+  }
+
+  do_reading_complete = true;                      //set the flag used to tell if we have received a completed string from the PC
 }
 
 void loop() {
 
-  if ( sensor_string_complete == true ) {
-    if ( isValidNumber ( sensorstring ) ) {
-      Serial.println ( sensorstring );
-    } else {
-      Serial.println ( sensorstring );
-      sensor_string_complete = false;
-      requestReadingFromDO();
+  if ( do_reading_complete == true) {
+    int number = getNumberOfStoredReadings();
+    saveReadings ( number, rtc.now().unixtime(), doReading, getTurbidity(), getTemperature() );
+    if ( number >= NUMBER_OF_READINGS_TO_SAVE_BEFORE_SENDING ) {
+      sendSaveReadings();
     }
-  }
-
-  if ( sensor_string_complete == true) {
-    sendMessage ( sensorstring, getTur(), getT(0) );
-    sensor_string_complete = false;
+    //    sendMessage ( doReading, getTurbidity(), getTemperature() );
+    //    do_reading_complete = false;
     requestReadingFromDO();
   }
 
 }
 
-void sendMessage ( String doreading, String turbidity, String temperatuur ) {
-  char txtMsg[200];
-  String message = 
-    "{ \"timestamp\": \"" + nowAsString() + "\", "
-    + "\"name\": \"Arduino1\", " +  
-    + "\"type\": \"FIXED\", " +      
-    + "\"data\": [ " +  
-    "{ \"disolvedOxygen\": " + doreading + ", \"turbidity\": " + turbidity + ", \"temperature\": " + temperatuur + ", \"samplingTimestamp\": \""+nowAsString()+"\"}"
+int getNumberOfStoredReadings() {
+  return EEPROM.read(0);
+}
+
+void saveReadings ( int numberOfStoredReadings, long samplingTimestamp, float doreadingAsFloat, float turbidityAsFloat, float temperatureAsFloat ) {
+
+  EEPROM.write ( 0, numberOfStoredReadings + 1 );
+
+  Serial.print ( "Wegschrijven van " );
+  Serial.print ( numberOfStoredReadings + 1 );
+  Serial.print ( ", samplingTimestamp ");
+  Serial.print (samplingTimestamp);
+  Serial.print ( ", doreadingAsFloat ");
+  Serial.print (doreadingAsFloat);
+  Serial.print ( ", turbidityAsFloat ");
+  Serial.print (turbidityAsFloat);
+  Serial.print ( ", temperatureAsFloat ");
+  Serial.println (temperatureAsFloat);
+
+  EEPROM_writeLong ( 1 + ( 4 * 5 * numberOfStoredReadings ), samplingTimestamp );
+  EEPROM_writeDouble ( 5 + ( 4 * 5 * numberOfStoredReadings ), doreadingAsFloat );
+  EEPROM_writeDouble ( 9 + ( 4 * 5 * numberOfStoredReadings ), turbidityAsFloat );
+  EEPROM_writeDouble ( 13 + ( 4 * 5 * numberOfStoredReadings ), temperatureAsFloat );
+
+}
+
+void sendSaveReadings() {
+  String message = calculateMessageToSend();
+  Serial.println ( message );
+  sendMessageOverGPRS ( message );
+  EEPROM.write ( 0, 0 );
+}
+
+String calculateMessageToSend() {
+
+  int number = getNumberOfStoredReadings();
+  String data = "";
+  char buffer[10];
+  for ( int i = 0; i < number; i ++ ) {
+
+    long samplingTimestamp = EEPROM_readLong ( 1 + ( 4 * 5 * i ) );
+    float doreadingAsFloat = EEPROM_readDouble ( 5 + ( 4 * 5 * i ) );
+    float turbidityAsFloat = EEPROM_readDouble ( 9 + ( 4 * 5 * i ) );
+    float temperatureAsFloat = EEPROM_readDouble ( 13 + ( 4 * 5 * i ) );
+
+    String doreading = dtostrf(doreadingAsFloat, 5, 2, buffer);
+    String turbidity = dtostrf(turbidityAsFloat, 5, 2, buffer);
+    String temperatuur = dtostrf(temperatureAsFloat, 5, 2, buffer);
+    String timestamp = dtostrf(samplingTimestamp, 10, 0, buffer);
+
+    if ( data.length() > 0 ) {
+      data += ",";
+    }
+
+    data += "{ \"disolvedOxygen\": " + doreading
+            + ", \"turbidity\": " + turbidity
+            + ", \"temperature\": " + temperatuur
+            + ", \"samplingTimestamp\": " +  timestamp + "}";
+  }
+
+  String timestamp = dtostrf(rtc.now().unixtime(), 10, 0, buffer);
+
+  return
+    "{ \"timestamp\": " + timestamp + ", "
+    + "\"name\": \"Arduino1\", "
+    + "\"type\": \"FIXED\", "
+    + "\"data\": [ "
+    + data
     + " ] }"
     ;
-  Serial.println ( message );
-//  sendMessageOverGPRS ( message );
-  /*
-  message.toCharArray(txtMsg, 200);
-  sms.beginSMS(remoteNumber);
-  sms.print(txtMsg);
-  sms.endSMS();
-  */
 }
 
+float getTemperature() {
+  tSensor.requestTemperatures();
+  return tSensor.getTempCByIndex(0);
+}
 
+float getTurbidity() {
+  return analogRead(A0) * (5.0 / 1024.0);
+}
 
+boolean isValidNumber(String str) {
+  for (byte i = 0; i < str.length(); i++) {
+    if (!isDigit(str.charAt(i)) && str.charAt(i) != '.' ) {
+      return false;
+    }
+  }
+  return true;
+}
 
 /*
- String getDO(){
-  String string ="";
-   myserial.print("R");  
-   myserial.print('\r');
-   boolean A = true;
-   while(A == true){
-      if (myserial.available() > 0) {                    
-      char inchar = (char)myserial.read();            
-       string += inchar;                           
-        if (inchar == '\r') {                           
-        if(string != "*OK"){
-         
-          A = false;
-        return string;
-          
-        }
-        string = "";
-        }
-        
-       }
-   }
-}
-
-*/
-
-String getT(int index){
-  tSensor.requestTemperatures();
-  float currentTemp = tSensor.getTempCByIndex(index);
-  char buffer[10];
-  return dtostrf(currentTemp, 5, 2, buffer);
-}
-
-String getTur(){
-  int sensorValue = analogRead(A0);
-  float voltage = sensorValue * (5.0 / 1024.0); 
-  char buffer[7];
-  return dtostrf(voltage, 5, 2, buffer);
-}
-
-boolean isValidNumber(String str){
-   for(byte i=0;i<str.length();i++) {
-      if(!isDigit(str.charAt(i)) && str.charAt(i) != '.' ) {
-        return false;
-      }
-   }
-   return true;
-} 
+void sendSMS ( String message )  {
+    message.toCharArray(txtMsg, 200);
+    sms.beginSMS(remoteNumber);
+    sms.print(txtMsg);
+    sms.endSMS();
+}*/
 
 void sendMessageOverGPRS ( String message ) {
   if (client.connect(server, port)) {
@@ -221,20 +242,20 @@ void sendMessageOverGPRS ( String message ) {
     client.print("POST ");
     client.print(path);
     client.println(" HTTP/1.1");
-    
+
     client.print("Host: ");
     client.println(server);
 
     client.println("Content-Type: application/json; charset=utf-8");
-    
+
     client.print("Content-Length: ");
     client.println(message.length() + 2);
-    
-    client.println("");    
+
+    client.println("");
     client.println(message);
 
     client.stop();
-        
+
     Serial.println("message send");
 
   } else {
@@ -243,24 +264,57 @@ void sendMessageOverGPRS ( String message ) {
   }
 }
 
-String nowAsString() {
-  DateTime now = rtc.now();
-  char buffer[20]; 
-  sprintf(buffer, "%04d-%02d-%02dT%02d:%02d:%02d", now.year(), now.month(), now.day(), now.hour(), now.minute(), now.second());
+/*
+  String formatDateAsString ( DateTime dateTime ) {
+  char buffer[20];
+  sprintf(buffer, "%04d-%02d-%02dT%02d:%02d:%02d", dateTime.year(), dateTime.month(), dateTime.day(), dateTime.hour(), dateTime.minute(), dateTime.second());
   return String(buffer);
+  }
+*/
+
+void EEPROM_writeDouble(int ee, double value) {
+  byte* p = (byte*)(void*)&value;
+  for (int i = 0; i < sizeof(value); i++) {
+    EEPROM.write(ee++, *p++);
+  }
 }
 
+double EEPROM_readDouble(int ee) {
+  double value = 0.0;
+  byte* p = (byte*)(void*)&value;
+  for (int i = 0; i < sizeof(value); i++) {
+    *p++ = EEPROM.read(ee++);
+  }
+  return value;
+}
 
+//This function will write a 4 byte (32bit) long to the eeprom at
+//the specified address to address + 3.
+void EEPROM_writeLong(int address, long value) {
+  //Decomposition from a long to 4 bytes by using bitshift.
+  //One = Most significant -> Four = Least significant byte
+  byte four = (value & 0xFF);
+  byte three = ((value >> 8) & 0xFF);
+  byte two = ((value >> 16) & 0xFF);
+  byte one = ((value >> 24) & 0xFF);
 
+  //Write the 4 bytes into the eeprom memory.
+  EEPROM.write(address, four);
+  EEPROM.write(address + 1, three);
+  EEPROM.write(address + 2, two);
+  EEPROM.write(address + 3, one);
+}
 
+long EEPROM_readLong(long address) {
+  //Read the 4 bytes from the eeprom memory.
+  long four = EEPROM.read(address);
+  long three = EEPROM.read(address + 1);
+  long two = EEPROM.read(address + 2);
+  long one = EEPROM.read(address + 3);
 
-
-
-
-
-
-
-
+  //Return the recomposed long by using bitshift.
+  return ((four << 0) & 0xFF) + ((three << 8) & 0xFFFF) + ((two << 16) & 0xFFFFFF) + ((one << 24) & 0xFFFFFFFF);
+}
 
 
 
